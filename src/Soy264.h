@@ -22,6 +22,8 @@ namespace Soy264
 			CouldNotOpenFile,
 			EndOfFile,
 			NalMarkersNotFound,
+			NalPacketForbiddenZeroNotZero,
+			InvalidNalPacketType,
 		};
 
 		const char*	ToString(Type Error);
@@ -82,7 +84,15 @@ namespace Soy264
 class Soy264::TNalPacketHeader
 {
 public:
+	TNalPacketHeader() :
+		mRefId	( -1 ),
+		mType	( Soy264::TNalUnitType::Invalid )
+	{
+	}
+
+public:
 	TNalUnitType::Type		mType;
+	int						mRefId;		//	there's some kinda reference ID. I think its for multiple streams in one file (stream switching)
 };
 
 class Soy264::TNalPacket
@@ -102,6 +112,7 @@ private:
 
 public:
 	Array<char>			mData;		//	packet data not including start marker (0001)
+	int					mFilePosition;
 };
 
 
@@ -123,6 +134,10 @@ public:
 class Soy264::TDecoder
 {
 public:
+	TDecoder() :
+		mPendingDataFileOffset	( 0 )
+	{
+	}
 	TError::Type	Load(const char* Filename);
 	TError::Type	DecodeNextFrame(TPixels& Pixels);
 
@@ -132,5 +147,6 @@ private:
 public:
 	TVideoMeta			mMeta;
 	ofPtr<SoyStreamBinaryFile>	mStream;
-	Array<char>			mPendingData;		//	data we've read, but not used
+	Array<char>			mPendingData;			//	data we've read, but not used
+	int					mPendingDataFileOffset;	//	keep track of where we are in the file to match up data with a hex editor
 };

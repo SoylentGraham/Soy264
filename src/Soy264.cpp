@@ -13,6 +13,8 @@ const char*	Soy264::TError::ToString(TError::Type Error)
 	case CouldNotOpenFile:		return "Could not open file";
 	case EndOfFile:				return "End of file";
 	case NalMarkersNotFound:	return "Nal markers not found";
+	case NalPacketForbiddenZeroNotZero:	return "Forbidden Zero, not zero.";
+	case InvalidNalPacketType:	return "Invalid NAL packet type";
 	default:					return "Unknown error type";
 	}
 }
@@ -133,7 +135,9 @@ Soy264::TError::Type Soy264::TDecoder::DecodeNextNalPacket(TNalPacket& Packet)
 	int Size = MarkerIndexes[1] - Index;
 	auto PacketData = GetRemoteArray( &mPendingData[Index], Size, Size );
 	Packet.mData = PacketData;
+	Packet.mFilePosition = Index + mPendingDataFileOffset;
 	mPendingData.RemoveBlock( MarkerIndexes[0], MarkerIndexes[1]-MarkerIndexes[0] );
+	mPendingDataFileOffset += MarkerIndexes[1]-MarkerIndexes[0];
 
 	auto Error = Packet.InitHeader();
 	if ( Error != TError::Success )
@@ -200,7 +204,8 @@ const char* Soy264::TNalUnitType::ToString(Soy264::TNalUnitType::Type NalUnitTyp
 }
 
 Soy264::TNalPacket::TNalPacket() :
-	mBitPos	( 0 )
+	mBitPos			( 0 ),
+	mFilePosition	( -1 )
 {
 }
 
@@ -211,7 +216,14 @@ Soy264::TError::Type Soy264::TNalPacket::InitHeader()
 	int UnitType = ReadBits(5);
 	//nalu->last_rbsp_byte=&nal_buf[nalu_size-1];
 
+	//if ( ForbiddenZero != 0 )
+	//	return TError::NalPacketForbiddenZeroNotZero;
+
+	mHeader.mRefId = RefIDC;
+
 	mHeader.mType = TNalUnitType::GetType( UnitType );
+	if ( mHeader.mType == TNalUnitType::Invalid )
+		return TError::InvalidNalPacketType;
 
 	return TError::Success;
 }
@@ -220,7 +232,7 @@ BufferString<100> Soy264::TNalPacket::GetDebug()
 {
 	BufferString<100> Debug;
 	Debug << TNalUnitType::ToString( mHeader.mType ) << " ";
-	Debug << Soy::FormatSizeBytes(mData.GetSize()) << " ";
+	Debug << Soy::FormatSizeBytes(mData.GetSize()) << " at filepos " << mFilePosition;
 
 	return Debug;
 }
