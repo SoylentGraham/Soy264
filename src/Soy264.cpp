@@ -19,6 +19,31 @@ const char*	Soy264::TError::ToString(TError::Type Error)
 	}
 }
 
+Soy264::TError::Type Soy264::TNalPacketHeader::Init(uint8 HeaderByte)
+{
+	BufferArray<char,1> HeaderBytes;
+	HeaderBytes.PushBack( HeaderByte );
+	TBitReader BitReader( GetArrayBridge( HeaderBytes ) );
+
+	bool Success = true;
+	int ForbiddenZero = 0;
+	int UnitType = 0;
+	Success &= BitReader.Read( ForbiddenZero, 1 );
+	Success &= BitReader.Read( mRefId, 2 );
+	Success &= BitReader.Read( UnitType, 5 );
+
+	if ( !Success )
+		return TError::FailedToReadNalPacketHeader;
+
+	if ( ForbiddenZero != 0 )
+		return TError::NalPacketForbiddenZeroNotZero;
+
+	mType = TNalUnitType::GetType( UnitType );
+	if ( mType == TNalUnitType::Invalid )
+		return TError::InvalidNalPacketType;
+
+	return TError::Success;
+}
 
 Soy264::TError::Type Soy264::TDecoder::Load(const char* Filename)
 {
@@ -35,11 +60,11 @@ Soy264::TError::Type Soy264::TDecoder::Load(const char* Filename)
 Soy264::TError::Type Soy264::TDecoder::DecodeNextFrame(TPixels& Pixels)
 {
 	//	read nal packets until we have enough to make a frame
-	Array<TNalPacket> NalPackets;
+	Array<TNalPacket*> NalPackets;
 
 	while ( true )
 	{
-		TNalPacket Packet;
+		TNalPacketRaw Packet;
 		auto Error = DecodeNextNalPacket( Packet );
 		if ( Error != TError::Success )
 			return Error;
@@ -49,7 +74,12 @@ Soy264::TError::Type Soy264::TDecoder::DecodeNextFrame(TPixels& Pixels)
 		Debug << "Read packet " << NalPackets.GetSize() << " " << Packet.GetDebug();
 		ofLogNotice( Debug.c_str() );
 
-		NalPackets.PushBack( Packet );
+		//	make actual packet type from factory
+		auto* pPacket = CreatePacket( Packet );
+		if ( !pPacket )
+			continue;
+
+		NalPackets.PushBack( pPacket );
 
 		//	do we have enough packets for a frame?
 	}
@@ -75,7 +105,7 @@ int FindPatternStart(ArrayBridge<char>& Data,const BufferArray<char,PATTERNSIZE>
 }
 
 
-Soy264::TError::Type Soy264::TDecoder::DecodeNextNalPacket(TNalPacket& Packet)
+Soy264::TError::Type Soy264::TDecoder::DecodeNextNalPacket(TNalPacketRaw& Packet)
 {
 	BufferArray<char,4> NalMarker;
 	NalMarker.PushBack(0);
@@ -134,12 +164,14 @@ Soy264::TError::Type Soy264::TDecoder::DecodeNextNalPacket(TNalPacket& Packet)
 	int Index = MarkerIndexes[0] + NalMarker.GetSize();
 	int Size = MarkerIndexes[1] - Index;
 	auto PacketData = GetRemoteArray( &mPendingData[Index], Size, Size );
-	Packet.mData = PacketData;
-	Packet.mFilePosition = Index + mPendingDataFileOffset;
+
+	TNalPacketMeta Meta;
+	Meta.mFilePosition = Index + mPendingDataFileOffset;
+	auto Error = Packet.Init( GetArrayBridge(PacketData), Meta );
+
 	mPendingData.RemoveBlock( MarkerIndexes[0], MarkerIndexes[1]-MarkerIndexes[0] );
 	mPendingDataFileOffset += MarkerIndexes[1]-MarkerIndexes[0];
 
-	auto Error = Packet.InitHeader();
 	if ( Error != TError::Success )
 		return Error;
 
@@ -203,44 +235,40 @@ const char* Soy264::TNalUnitType::ToString(Soy264::TNalUnitType::Type NalUnitTyp
 	};
 }
 
-Soy264::TNalPacket::TNalPacket() :
-	mBitPos			( 0 ),
-	mFilePosition	( -1 )
+
+Soy264::TError::Type Soy264::TNalPacketRaw::Init(const ArrayBridge<char>& Data,TNalPacketMeta Meta)
 {
-}
+	//	copy data
+	mData = Data;
+	mMeta = Meta;
 
-Soy264::TError::Type Soy264::TNalPacket::InitHeader()
-{
-	int ForbiddenZero = ReadBits(1);
-	int RefIDC = ReadBits(2);
-	int UnitType = ReadBits(5);
-	//nalu->last_rbsp_byte=&nal_buf[nalu_size-1];
+	if ( mData.IsEmpty() )
+		return TError::FailedToReadNalPacketHeader;
 
-	if ( ForbiddenZero != 0 )
-		return TError::NalPacketForbiddenZeroNotZero;
-
-	mHeader.mRefId = RefIDC;
-
-	mHeader.mType = TNalUnitType::GetType( UnitType );
-	if ( mHeader.mType == TNalUnitType::Invalid )
-		return TError::InvalidNalPacketType;
+	//	read header
+	//	pop byte for header
+	char HeaderByte = mData.PopAt(0);
+	auto Error = mHeader.Init( HeaderByte );
+	if ( Error != TError::Success )
+		return Error;
 
 	return TError::Success;
 }
 
-BufferString<100> Soy264::TNalPacket::GetDebug()
+
+BufferString<100> Soy264::TNalPacketRaw::GetDebug()
 {
 	BufferString<100> Debug;
 	Debug << TNalUnitType::ToString( mHeader.mType ) << " in stream " << mHeader.mRefId << " ";
-	Debug << Soy::FormatSizeBytes(mData.GetSize()) << " at filepos " << mFilePosition;
+	Debug << Soy::FormatSizeBytes(mData.GetSize()) << " at filepos " << mMeta.mFilePosition;
 
 	return Debug;
 }
-
-int Soy264::TNalPacket::ReadBits(int BitSize)
+	
+bool TBitReader::Read(int& Data,int BitCount)
 {
-	if ( BitSize <= 0 )
-		return -1;
+	if ( BitCount <= 0 )
+		return false;
 
 	//	current byte
 	int CurrentByte = mBitPos / 8;
@@ -248,20 +276,52 @@ int Soy264::TNalPacket::ReadBits(int BitSize)
 
 	//	out of range 
 	if ( CurrentByte >= mData.GetSize() )
-		return -1;
+		return false;
 
 	//	move along
-	mBitPos += BitSize;
+	mBitPos += BitCount;
 
 	//	get byte
-	int DataByte = mData[CurrentByte];
+	Data = mData[CurrentByte];
 
 	//	pick out certain bits
 	//	gr: reverse endianess to what I thought...
-	//DataByte >>= CurrentBit;
-	DataByte >>= 8-CurrentBit-BitSize;
-	DataByte &= (1<<BitSize)-1;
+	//Data >>= CurrentBit;
+	Data >>= 8-CurrentBit-BitCount;
+	Data &= (1<<BitCount)-1;
 
-	return DataByte;
+	return true;
+}
+
+
+Soy264::TNalPacket* Soy264::TDecoder::CreatePacket(const Soy264::TNalPacketRaw& Packet)
+{
+	switch ( Packet.mHeader.mType )
+	{
+	case Soy264::TNalUnitType::SequenceParameterSet:	return new TNalPacket_SPS( Packet );
+	case Soy264::TNalUnitType::PictureParameterSet:		return new TNalPacket_PPS( Packet );
+	case Soy264::TNalUnitType::Slice_NonIDRPicture:		return new TNalPacket_SliceNonIDR( Packet );
+	};
+
+	BufferString<100> Debug;
+	Debug << "Unsupported packet type; " << Soy264::TNalUnitType::ToString( Packet.mHeader.mType );
+	ofLogNotice( Debug.c_str() );
+	return nullptr;
+}
+
+
+Soy264::TNalPacket_SPS::TNalPacket_SPS(const TNalPacketRaw& PacketRaw) :
+	TNalPacket	( PacketRaw )
+{
+}
+
+Soy264::TNalPacket_PPS::TNalPacket_PPS(const TNalPacketRaw& PacketRaw) :
+	TNalPacket	( PacketRaw )
+{
+}
+
+Soy264::TNalPacket_SliceNonIDR::TNalPacket_SliceNonIDR(const TNalPacketRaw& PacketRaw) :
+	TNalPacket	( PacketRaw )
+{
 }
 

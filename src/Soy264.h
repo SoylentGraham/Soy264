@@ -23,6 +23,7 @@ namespace Soy264
 			EndOfFile,
 			NalMarkersNotFound,
 			NalPacketForbiddenZeroNotZero,
+			FailedToReadNalPacketHeader,
 			InvalidNalPacketType,
 		};
 
@@ -30,7 +31,13 @@ namespace Soy264
 	};
 
 	class TNalPacket;
+	class TNalPacketMeta;
+	class TNalPacketRaw;
 	class TNalPacketHeader;
+
+	class TNalPacket_SPS;
+	class TNalPacket_PPS;
+	class TNalPacket_SliceNonIDR;
 
 	namespace TNalUnitType
 	{
@@ -81,6 +88,24 @@ namespace Soy264
 };
 
 
+class TBitReader
+{
+public:
+	TBitReader(const ArrayBridge<char>& Data) :
+		mData	( Data ),
+		mBitPos	( 0 )
+	{
+	}
+	
+	bool						Read(int& Data,int BitCount);
+
+private:
+	const ArrayBridge<char>&	mData;
+	unsigned int				mBitPos;	//	current bit-reading-pos 
+};
+
+
+
 class Soy264::TNalPacketHeader
 {
 public:
@@ -90,29 +115,41 @@ public:
 	{
 	}
 
+	TError::Type	Init(uint8 HeaderByte);
+
 public:
 	TNalUnitType::Type		mType;
 	int						mRefId;		//	there's some kinda reference ID. I think its for multiple streams in one file (stream switching)
 };
 
-class Soy264::TNalPacket
+class Soy264::TNalPacketMeta
 {
 public:
-	TNalPacket();
-
-	TError::Type		InitHeader();
-	BufferString<100>	GetDebug();
-
-private:
-	int					ReadBits(int BitSize);	//	-1 on error
-
-private:
-	TNalPacketHeader	mHeader;
-	unsigned int		mBitPos;	//	current bit-reading-pos
+	TNalPacketMeta() :
+		mPacketIndex	( -1 ),
+		mFilePosition	( -1 )
+	{
+	}
 
 public:
+	int		mPacketIndex;
+	int		mFilePosition;	//	where in the file did this packet come from?
+};
+
+class Soy264::TNalPacketRaw
+{
+public:
+	TNalPacketRaw()
+	{
+	}
+
+	TError::Type		Init(const ArrayBridge<char>& Data,TNalPacketMeta Meta);
+	BufferString<100>	GetDebug();
+
+public:
+	TNalPacketHeader	mHeader;
 	Array<char>			mData;		//	packet data not including start marker (0001)
-	int					mFilePosition;
+	TNalPacketMeta		mMeta;	
 };
 
 
@@ -142,7 +179,8 @@ public:
 	TError::Type	DecodeNextFrame(TPixels& Pixels);
 
 private:
-	TError::Type	DecodeNextNalPacket(TNalPacket& Packet);
+	TError::Type	DecodeNextNalPacket(TNalPacketRaw& Packet);
+	TNalPacket*		CreatePacket(const TNalPacketRaw& Packet);	//	create packet type from factory
 
 public:
 	TVideoMeta			mMeta;
@@ -150,3 +188,44 @@ public:
 	Array<char>			mPendingData;			//	data we've read, but not used
 	int					mPendingDataFileOffset;	//	keep track of where we are in the file to match up data with a hex editor
 };
+
+
+class Soy264::TNalPacket
+{
+public:
+	TNalPacket(const TNalPacketRaw& PacketRaw) :
+		mHeader	( PacketRaw.mHeader ),
+		mMeta	( PacketRaw.mMeta )
+	{
+	}
+	virtual ~TNalPacket()	{}
+
+public:
+	TNalPacketMeta		mMeta;
+	TNalPacketHeader	mHeader;
+};
+
+
+
+class Soy264::TNalPacket_SPS : public TNalPacket
+{
+public:
+	TNalPacket_SPS(const TNalPacketRaw& PacketRaw);
+};
+
+
+
+class Soy264::TNalPacket_PPS : public TNalPacket
+{
+public:
+	TNalPacket_PPS(const TNalPacketRaw& PacketRaw);
+};
+
+
+
+class Soy264::TNalPacket_SliceNonIDR : public TNalPacket
+{
+public:
+	TNalPacket_SliceNonIDR(const TNalPacketRaw& PacketRaw);
+};
+
