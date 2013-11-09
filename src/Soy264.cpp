@@ -292,6 +292,31 @@ bool TBitReader::Read(int& Data,int BitCount)
 
 	return true;
 }
+	
+bool TBitReader::ReadUnsignedExpGolomb(int& Data)
+{
+	int exp;
+	for( exp=0;	Read(1)==0;	exp++ )
+	{
+	}
+
+	if( exp ) 
+		Data = (1<<exp)-1 + Read(exp);
+	else
+		Data = 0;
+
+	return true;
+}
+
+bool TBitReader::ReadSignedExpGolomb(int& Data)
+{
+	if ( !ReadUnsignedExpGolomb( Data ) )
+		return false;
+	
+	Data = (Data&1) ? (Data+1)>>1 : -(Data>>1);
+	return true;
+}
+
 
 
 Soy264::TNalPacket* Soy264::TDecoder::CreatePacket(const Soy264::TNalPacketRaw& Packet)
@@ -313,6 +338,57 @@ Soy264::TNalPacket* Soy264::TDecoder::CreatePacket(const Soy264::TNalPacketRaw& 
 Soy264::TNalPacket_SPS::TNalPacket_SPS(const TNalPacketRaw& PacketRaw) :
 	TNalPacket	( PacketRaw )
 {
+	//	read SPS header
+	TBitReader BitReader( GetArrayBridge( PacketRaw.mData ) );
+
+	profile_idc                           =BitReader.Read(8);
+	constraint_set0_flag                  =BitReader.Read(1);
+	constraint_set1_flag                  =BitReader.Read(1);
+	constraint_set2_flag                  =BitReader.Read(1);
+	reserved_zero_5bits                   =BitReader.Read(5);
+	level_idc                             =BitReader.Read(8);
+	seq_parameter_set_id                  =BitReader.ReadUnsignedExpGolomb();
+	log2_max_frame_num                    =BitReader.ReadUnsignedExpGolomb()+4;
+	MaxFrameNum=1<<log2_max_frame_num;
+	pic_order_cnt_type                    =BitReader.ReadUnsignedExpGolomb();
+	if(pic_order_cnt_type==0) 
+	{
+		log2_max_pic_order_cnt_lsb          =BitReader.ReadUnsignedExpGolomb()+4;
+		MaxPicOrderCntLsb=1<<log2_max_pic_order_cnt_lsb;
+	}
+	else if(pic_order_cnt_type==1) 
+	{
+		delta_pic_order_always_zero_flag    =BitReader.Read(1);
+		offset_for_non_ref_pic              =BitReader.ReadSignedExpGolomb();
+		offset_for_top_to_bottom_field      =BitReader.ReadSignedExpGolomb();
+		num_ref_frames_in_pic_order_cnt_cycle=BitReader.ReadUnsignedExpGolomb();
+		for( int i=0; i<num_ref_frames_in_pic_order_cnt_cycle; ++i)
+			offset_for_ref_frame[i]           =BitReader.ReadSignedExpGolomb();
+	}
+	
+	num_ref_frames                        =BitReader.ReadUnsignedExpGolomb();
+	gaps_in_frame_num_value_allowed_flag  =BitReader.Read(1);
+	PicWidthInMbs                         =BitReader.ReadUnsignedExpGolomb()+1;
+	PicWidthInSamples=PicWidthInMbs*16;
+	PicHeightInMapUnits                   =BitReader.ReadUnsignedExpGolomb()+1;
+	PicSizeInMapUnits=PicWidthInMbs*PicHeightInMapUnits;
+	frame_mbs_only_flag                   =BitReader.Read(1);
+	FrameHeightInMbs=(2-frame_mbs_only_flag)*PicHeightInMapUnits;
+	FrameHeightInSamples=16*FrameHeightInMbs;
+	if(!frame_mbs_only_flag)
+	{
+		mb_adaptive_frame_field_flag        =BitReader.Read(1);
+	}
+	direct_8x8_inference_flag             =BitReader.Read(1);
+	frame_cropping_flag                   =BitReader.Read(1);
+	if(frame_cropping_flag) 
+	{
+		frame_crop_left_offset              =BitReader.ReadUnsignedExpGolomb();
+		frame_crop_right_offset             =BitReader.ReadUnsignedExpGolomb();
+		frame_crop_top_offset               =BitReader.ReadUnsignedExpGolomb();
+		frame_crop_bottom_offset            =BitReader.ReadUnsignedExpGolomb();
+	}
+	vui_parameters_present_flag           =BitReader.Read(1);
 }
 
 Soy264::TNalPacket_PPS::TNalPacket_PPS(const TNalPacketRaw& PacketRaw) :
@@ -323,5 +399,20 @@ Soy264::TNalPacket_PPS::TNalPacket_PPS(const TNalPacketRaw& PacketRaw) :
 Soy264::TNalPacket_SliceNonIDR::TNalPacket_SliceNonIDR(const TNalPacketRaw& PacketRaw) :
 	TNalPacket	( PacketRaw )
 {
+	//	read slice header
+	TBitReader BitReader( GetArrayBridge( PacketRaw.mData ) );
+
+	//	FirstPartOfSliceHeader
+	mFirstMbInSlice = BitReader.ReadUnsignedExpGolomb();
+	mSliceType = Soy264::TSliceType::GetSliceType( BitReader.ReadUnsignedExpGolomb() );
+
+  currSlice->pic_parameter_set_id = read_ue_v ("SH: pic_parameter_set_id", currStream, &p_Dec->UsedBits);
+
+  if( p_Vid->separate_colour_plane_flag )
+    currSlice->colour_plane_id = read_u_v (2, "SH: colour_plane_id", currStream, &p_Dec->UsedBits);
+  else
+    currSlice->colour_plane_id = PLANE_Y;
+
+  return p_Dec->UsedBits;
 }
 
