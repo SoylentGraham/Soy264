@@ -106,7 +106,7 @@ Soy264::TError::Type Soy264::TDecoder::DecodeNextNalPacket(TNalPacket& Packet)
 	//	read more data until we get enough
 	while ( MarkerIndexes.GetSize() < 2 )
 	{
-		BufferArray<char,1024> Buffer;
+		BufferArray<char,1024*4> Buffer;
 		if ( !mStream->Read( GetArrayBridge(Buffer) ) )
 			return TError::EndOfFile;
 		mPendingData.PushBackArray( Buffer );
@@ -128,7 +128,7 @@ Soy264::TError::Type Soy264::TDecoder::DecodeNextNalPacket(TNalPacket& Packet)
 		return TError::NalMarkersNotFound;
 	
 	//	first marker should start at the start of the data
-	assert( MarkerIndexes[0] == 0 );
+	//assert( MarkerIndexes[0] == 0 );
 
 	//	pop NAL packet data (not including marker)
 	int Index = MarkerIndexes[0] + NalMarker.GetSize();
@@ -216,8 +216,8 @@ Soy264::TError::Type Soy264::TNalPacket::InitHeader()
 	int UnitType = ReadBits(5);
 	//nalu->last_rbsp_byte=&nal_buf[nalu_size-1];
 
-	//if ( ForbiddenZero != 0 )
-	//	return TError::NalPacketForbiddenZeroNotZero;
+	if ( ForbiddenZero != 0 )
+		return TError::NalPacketForbiddenZeroNotZero;
 
 	mHeader.mRefId = RefIDC;
 
@@ -231,7 +231,7 @@ Soy264::TError::Type Soy264::TNalPacket::InitHeader()
 BufferString<100> Soy264::TNalPacket::GetDebug()
 {
 	BufferString<100> Debug;
-	Debug << TNalUnitType::ToString( mHeader.mType ) << " ";
+	Debug << TNalUnitType::ToString( mHeader.mType ) << " in stream " << mHeader.mRefId << " ";
 	Debug << Soy::FormatSizeBytes(mData.GetSize()) << " at filepos " << mFilePosition;
 
 	return Debug;
@@ -255,9 +255,13 @@ int Soy264::TNalPacket::ReadBits(int BitSize)
 
 	//	get byte
 	int DataByte = mData[CurrentByte];
+
 	//	pick out certain bits
-	DataByte >>= CurrentBit;
+	//	gr: reverse endianess to what I thought...
+	//DataByte >>= CurrentBit;
+	DataByte >>= 8-CurrentBit-BitSize;
 	DataByte &= (1<<BitSize)-1;
+
 	return DataByte;
 }
 
